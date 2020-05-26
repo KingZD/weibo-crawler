@@ -18,8 +18,14 @@ import requests
 from lxml import etree
 from requests.adapters import HTTPAdapter
 from tqdm import tqdm
+from threading import Thread  # 创建线程的模块
+from pymysql.cursors import DictCursor
 
 
+# 搜索分页  type=1 是用户
+# https://m.weibo.cn/api/container/getIndex?containerid=100103type=1&q=代购&page_type=searchall&page=3
+# https://m.weibo.cn/api/container/getIndex?containerid=100103type%3D1%26q%3D%E4%BB%A3%E8%B4%AD&page_type=searchall&page=3
+# https://m.weibo.cn/api/container/getIndex?q=%E4%BB%A3%E8%B4%AD&page=1&type=1&containerid=100103&page_type=searchall
 class Weibo(object):
     def __init__(self, config):
         """Weibo类初始化"""
@@ -62,6 +68,8 @@ class Weibo(object):
         self.got_count = 0  # 存储爬取到的微博数
         self.weibo = []  # 存储爬取到的所有微博信息
         self.weibo_id_list = []  # 存储爬取到的所有微博id
+        self.weibo_point_user_list = []  # 存储用户列表
+        self.weibo_point_user = {}  # 存储整个搜索返回的列表数据体
 
     def validate_config(self, config):
         """验证配置是否正确"""
@@ -898,13 +906,33 @@ class Weibo(object):
             finally:
                 connection.close()
 
+    def mysql_query(self, mysql_config, table, count):
+        """向MySQL表插入或更新数据"""
+        import pymysql
+        rs = []
+        if self.mysql_config:
+            mysql_config = self.mysql_config
+        mysql_config['db'] = 'weibo'
+        connection = pymysql.connect(**mysql_config)
+        cursor = connection.cursor(DictCursor)
+        try:
+            cursor.execute("""select * from {table} LIMIT {count}""".format(table=table, count=count))
+            rs = cursor.fetchall()
+        except Exception as e:
+            connection.rollback()
+            print('Error: ', e)
+            traceback.print_exc()
+        finally:
+            connection.close()
+        return rs
+
     def weibo_to_mysql(self, wrote_count):
         """将爬取的微博信息写入MySQL数据库"""
         mysql_config = {
             'host': 'localhost',
             'port': 3306,
             'user': 'root',
-            'password': '123456',
+            'password': 'qazplmcc',
             'charset': 'utf8mb4'
         }
         # 创建'weibo'表
@@ -1064,9 +1092,27 @@ class Weibo(object):
         self.got_count = 0
         self.weibo_id_list = []
 
-    def start(self):
+    def start_get_user_detail(self):
+        p = Thread(target=self.get_user_detail(), args=('获取用户detail',))
+        p.start()  # 只是给操作系统发送了一个就绪信号，并不是执行。操作系统接收信号后安排cpu运行
+
+    # 开始干活啦
+    def get_user_detail(self):
         """运行爬虫"""
         try:
+            mysql_config = {
+                'host': 'localhost',
+                'port': 3306,
+                'user': 'root',
+                'password': 'qazplmcc',
+                'charset': 'utf8mb4'
+            }
+            uids = self.mysql_query(mysql_config, 'weibo_wait_insert_uid', 1)
+            a_uids = []
+            for a_uid in uids:
+                pre_uid = {'since_date': self.since_date, 'user_id': a_uid['uid']}
+                a_uids.append(pre_uid)
+            self.user_config_list = a_uids
             for user_config in self.user_config_list:
                 self.initialize_info(user_config)
                 self.get_pages()
@@ -1074,9 +1120,78 @@ class Weibo(object):
                 print('*' * 100)
                 if self.user_config_file_path:
                     self.update_user_config_file(self.user_config_file_path)
+                # todo 移除 weibo_wait_insert_uid 表里面拉去过信息uid
+                # sleep
+                sleep(random.randint(6, 10))
         except Exception as e:
             print('Error: ', e)
             traceback.print_exc()
+
+    def start_query_user_pages(self):
+        p = Thread(target=self.get_query_user_pages(), args=('获取用户列表',))
+        p.start()  # 只是给操作系统发送了一个就绪信号，并不是执行。操作系统接收信号后安排cpu运行
+
+    #  获取指定搜索数据相关用户列表
+    def get_query_user_pages(self):
+        #  从第一页开始
+        page_start = 1
+        self.update_per_page_user_list(page_start)
+        page_count = self.weibo_point_user['cardlistInfo']['v_p']
+        #  如果获取到的分页数据大于默认第一页 则循环取值 否则就一页数据
+        # if page_start < page_count:
+        #     while page_start <= page_count:
+        #         self.update_per_page_user_list(page_start)
+        #         page_start += 1
+
+    # 更新分页拉取的每页用户数据，以便当前循环逻辑下可以获取
+    def update_per_page_user_list(self, page_start):
+        wjs = self.get_query_user_json(page_start)
+        self.weibo_point_user = wjs['data']
+        for a_weibo_point_user in self.weibo_point_user['cards']:
+            if a_weibo_point_user['card_type'] == 11:
+                self.weibo_point_user_list = a_weibo_point_user['card_group']
+        uids = []
+        for point_user in self.weibo_point_user_list:
+            uids.append({'uid': point_user['user']['id']})
+        # 按页插入数据库 并且sleep下抓取操作
+        self.insert_wait_pull_user_id(uids)
+        # 随机休眠6-10s再继续干活
+        sleep(random.randint(6, 10))
+
+    def get_query_user_json(self, page):
+        """获取网页中微博json数据"""
+        search_point_word = '代购'
+        params = {
+            'containerid': '100103type=3&q=' + search_point_word,
+            'page_type': 'searchall',
+            'page': page
+        }
+        js = self.get_json(params)
+        return js
+
+    # 按照指定字符筛选出的用户放入待拉取表
+    def insert_wait_pull_user_id(self, wait_insert_uid):
+        """将爬取的用户信息写入MySQL数据库"""
+        mysql_config = {
+            'host': 'localhost',
+            'port': 3306,
+            'user': 'root',
+            'password': '123456',
+            'charset': 'utf8mb4'
+        }
+        # 创建'weibo'数据库
+        create_database = """CREATE DATABASE IF NOT EXISTS weibo_wait_insert_uid DEFAULT
+                         CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"""
+        self.mysql_create_database(mysql_config, create_database)
+        # 创建'user'表
+        create_table = """
+                CREATE TABLE IF NOT EXISTS weibo_wait_insert_uid (
+                uid varchar(30) NOT NULL,
+                PRIMARY KEY (uid)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+        self.mysql_create_table(mysql_config, create_table)
+        self.mysql_insert(mysql_config, 'weibo_wait_insert_uid', wait_insert_uid)
+        print(u'写入%s个待抓取用户进入MySQL数据库完毕 ' % wait_insert_uid)
 
 
 def main():
@@ -1093,7 +1208,8 @@ def main():
                 sys.exit(u'config.json 格式不正确，请参考 '
                          u'https://github.com/dataabc/weibo-crawler#3程序设置')
         wb = Weibo(config)
-        wb.start()  # 爬取微博信息
+        wb.start_get_user_detail()
+        # wb.start_query_user_pages()  # 爬取微博信息
     except Exception as e:
         print('Error: ', e)
         traceback.print_exc()
