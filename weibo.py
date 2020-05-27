@@ -13,12 +13,12 @@ import traceback
 from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from time import sleep
+from threading import Thread
 
 import requests
 from lxml import etree
 from requests.adapters import HTTPAdapter
 from tqdm import tqdm
-from threading import Thread  # 创建线程的模块
 from pymysql.cursors import DictCursor
 
 
@@ -52,7 +52,7 @@ class Weibo(object):
         if not isinstance(user_id_list, list):
             if not os.path.isabs(user_id_list):
                 user_id_list = os.path.split(
-                    os.path.realpath(__file__))[0] + os.sep + user_id_list
+                    os.path.realpath('__file__'))[0] + os.sep + user_id_list
             self.user_config_file_path = user_id_list  # 用户配置文件路径
             user_config_list = self.get_user_config_list(user_id_list)
         else:
@@ -106,7 +106,7 @@ class Weibo(object):
         if not isinstance(user_id_list, list):
             if not os.path.isabs(user_id_list):
                 user_id_list = os.path.split(
-                    os.path.realpath(__file__))[0] + os.sep + user_id_list
+                    os.path.realpath('__file__'))[0] + os.sep + user_id_list
             if not os.path.isfile(user_id_list):
                 sys.exit(u'不存在%s文件' % user_id_list)
 
@@ -136,7 +136,7 @@ class Weibo(object):
     def user_to_csv(self):
         """将爬取到的用户信息写入csv文件"""
         file_dir = os.path.split(
-            os.path.realpath(__file__))[0] + os.sep + 'weibo'
+            os.path.realpath('__file__'))[0] + os.sep + 'weibo'
         if not os.path.isdir(file_dir):
             os.makedirs(file_dir)
         file_path = file_dir + os.sep + 'users.csv'
@@ -157,8 +157,7 @@ class Weibo(object):
         self.info_to_mongodb('user', user_list)
         print(u'%s信息写入MongoDB数据库完毕' % self.user['screen_name'])
 
-    def user_to_mysql(self):
-        """将爬取的用户信息写入MySQL数据库"""
+    def create_database(self):
         mysql_config = {
             'host': 'localhost',
             'port': 3306,
@@ -168,35 +167,75 @@ class Weibo(object):
         }
         # 创建'weibo'数据库
         create_database = """CREATE DATABASE IF NOT EXISTS weibo DEFAULT
-                         CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"""
+                                 CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"""
         self.mysql_create_database(mysql_config, create_database)
         # 创建'user'表
+        create_table = """CREATE TABLE IF NOT EXISTS user (
+                                   id varchar(20) NOT NULL,
+                                   screen_name varchar(30),
+                                   gender varchar(10),
+                                   statuses_count INT,
+                                   followers_count INT,
+                                   follow_count INT,
+                                   registration_time varchar(20),
+                                   sunshine varchar(20),
+                                   birthday varchar(40),
+                                   location varchar(200),
+                                   education varchar(200),
+                                   company varchar(200),
+                                   description varchar(140),
+                                   profile_url varchar(200),
+                                   profile_image_url varchar(200),
+                                   avatar_hd varchar(200),
+                                   urank INT,
+                                   mbrank INT,
+                                   verified BOOLEAN DEFAULT 0,
+                                   verified_type INT,
+                                   verified_reason varchar(140),
+                                   PRIMARY KEY (id)
+                                   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+        self.mysql_create_table(mysql_config, create_table)
+        # 创建'weibo'表
         create_table = """
-                CREATE TABLE IF NOT EXISTS user (
+                CREATE TABLE IF NOT EXISTS weibo (
                 id varchar(20) NOT NULL,
+                bid varchar(12) NOT NULL,
+                user_id varchar(20),
                 screen_name varchar(30),
-                gender varchar(10),
-                statuses_count INT,
-                followers_count INT,
-                follow_count INT,
-                registration_time varchar(20),
-                sunshine varchar(20),
-                birthday varchar(40),
-                location varchar(200),
-                education varchar(200),
-                company varchar(200),
-                description varchar(140),
-                profile_url varchar(200),
-                profile_image_url varchar(200),
-                avatar_hd varchar(200),
-                urank INT,
-                mbrank INT,
-                verified BOOLEAN DEFAULT 0,
-                verified_type INT,
-                verified_reason varchar(140),
+                text varchar(5000),
+                article_url varchar(100),
+                topics varchar(200),
+                at_users varchar(1000),
+                pics varchar(3000),
+                video_url varchar(1000),
+                location varchar(100),
+                created_at DATETIME,
+                source varchar(30),
+                attitudes_count INT,
+                comments_count INT,
+                reposts_count INT,
+                retweet_id varchar(20),
                 PRIMARY KEY (id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
         self.mysql_create_table(mysql_config, create_table)
+        # 创建'用户待爬取'表
+        create_table = """
+                CREATE TABLE IF NOT EXISTS weibo_wait_insert_uid (
+                uid varchar(30) NOT NULL,
+                c_time DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6),
+                PRIMARY KEY (uid)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+        self.mysql_create_table(mysql_config, create_table)
+
+    def user_to_mysql(self):
+        mysql_config = {
+            'host': 'localhost',
+            'port': 3306,
+            'user': 'root',
+            'password': '123456',
+            'charset': 'utf8mb4'
+        }
+        """将爬取的用户信息写入MySQL数据库"""
         self.mysql_insert(mysql_config, 'user', [self.user])
         print(u'%s信息写入MySQL数据库完毕' % self.user['screen_name'])
 
@@ -220,7 +259,7 @@ class Weibo(object):
             user_info['gender'] = info.get('gender', '')
             params = {
                 'containerid':
-                '230283' + str(self.user_config['user_id']) + '_-_INFO'
+                    '230283' + str(self.user_config['user_id']) + '_-_INFO'
             }
             zh_list = [
                 u'生日', u'所在地', u'小学', u'初中', u'高中', u'大学', u'公司', u'注册时间',
@@ -241,7 +280,7 @@ class Weibo(object):
                         if card.get('item_name') in zh_list:
                             user_info[en_list[zh_list.index(
                                 card.get('item_name'))]] = card.get(
-                                    'item_content', '')
+                                'item_content', '')
             user_info['statuses_count'] = info.get('statuses_count', 0)
             user_info['followers_count'] = info.get('followers_count', 0)
             user_info['follow_count'] = info.get('follow_count', 0)
@@ -303,7 +342,7 @@ class Weibo(object):
         video_url_list = []
         if weibo_info.get('page_info'):
             if weibo_info['page_info'].get('media_info') and weibo_info[
-                    'page_info'].get('type') == 'video':
+                'page_info'].get('type') == 'video':
                 media_info = weibo_info['page_info']['media_info']
                 video_url = media_info.get('mp4_720p_mp4')
                 if not video_url:
@@ -496,7 +535,7 @@ class Weibo(object):
         for k, v in weibo.items():
             if 'bool' not in str(type(v)) and 'int' not in str(
                     type(v)) and 'list' not in str(
-                        type(v)) and 'long' not in str(type(v)):
+                type(v)) and 'long' not in str(type(v)):
                 weibo[k] = v.replace(u"\u200b", "").encode(
                     sys.stdout.encoding, "ignore").decode(sys.stdout.encoding)
         return weibo
@@ -714,7 +753,7 @@ class Weibo(object):
         """获取结果文件路径"""
         try:
             file_dir = os.path.split(
-                os.path.realpath(__file__)
+                os.path.realpath('__file__')
             )[0] + os.sep + 'weibo' + os.sep + self.user['screen_name']
             if type == 'img' or type == 'video':
                 file_dir = file_dir + os.sep + type
@@ -906,7 +945,8 @@ class Weibo(object):
             finally:
                 connection.close()
 
-    def mysql_query(self, mysql_config, table, count):
+    def mysql_query_page(self, table, start, end):
+        mysql_config = {}
         """向MySQL表插入或更新数据"""
         import pymysql
         rs = []
@@ -916,7 +956,8 @@ class Weibo(object):
         connection = pymysql.connect(**mysql_config)
         cursor = connection.cursor(DictCursor)
         try:
-            cursor.execute("""select * from {table} LIMIT {count}""".format(table=table, count=count))
+            cursor.execute("""select * from {table} LIMIT {start}, {end}"""
+                           .format(table=table, start=start, end=end))
             rs = cursor.fetchall()
         except Exception as e:
             connection.rollback()
@@ -925,6 +966,68 @@ class Weibo(object):
         finally:
             connection.close()
         return rs
+
+    def mysql_query(self, mysql_config, table, count, order_by):
+        """向MySQL表插入或更新数据"""
+        import pymysql
+        rs = []
+        if self.mysql_config:
+            mysql_config = self.mysql_config
+        mysql_config['db'] = 'weibo'
+        connection = pymysql.connect(**mysql_config)
+        cursor = connection.cursor(DictCursor)
+        try:
+            sql = """select * from {table} {order_by} LIMIT {count}"""\
+                .format(table=table, count=count, order_by=order_by)
+            print sql
+            cursor.execute(sql)
+            rs = cursor.fetchall()
+        except Exception as e:
+            connection.rollback()
+            print('Error: ', e)
+            traceback.print_exc()
+        finally:
+            connection.close()
+        return rs
+
+    def mysql_query_data_count(self, table):
+        """向MySQL表插入或更新数据"""
+        import pymysql
+        rs = 0
+        mysql_config = {}
+        if self.mysql_config:
+            mysql_config = self.mysql_config
+        mysql_config['db'] = 'weibo'
+        connection = pymysql.connect(**mysql_config)
+        cursor = connection.cursor(DictCursor)
+        try:
+            cursor.execute("""select count(*) as count from {table}""".format(table=table))
+            rs = cursor.fetchall()
+        except Exception as e:
+            connection.rollback()
+            print('Error: ', e)
+            traceback.print_exc()
+        finally:
+            connection.close()
+        return rs
+
+    def remove_data(self, table, key, value):
+        """向MySQL表插入或更新数据"""
+        import pymysql
+        mysql_config = {}
+        if self.mysql_config:
+            mysql_config = self.mysql_config
+        mysql_config['db'] = 'weibo'
+        connection = pymysql.connect(**mysql_config)
+        cursor = connection.cursor(DictCursor)
+        try:
+            cursor.execute("""delete from {table} where {key} = {value}""".format(table=table, key=key, value=value))
+        except Exception as e:
+            connection.rollback()
+            print('Error: ', e)
+            traceback.print_exc()
+        finally:
+            connection.close()
 
     def weibo_to_mysql(self, wrote_count):
         """将爬取的微博信息写入MySQL数据库"""
@@ -935,29 +1038,6 @@ class Weibo(object):
             'password': 'qazplmcc',
             'charset': 'utf8mb4'
         }
-        # 创建'weibo'表
-        create_table = """
-                CREATE TABLE IF NOT EXISTS weibo (
-                id varchar(20) NOT NULL,
-                bid varchar(12) NOT NULL,
-                user_id varchar(20),
-                screen_name varchar(30),
-                text varchar(2000),
-                article_url varchar(100),
-                topics varchar(200),
-                at_users varchar(1000),
-                pics varchar(3000),
-                video_url varchar(1000),
-                location varchar(100),
-                created_at DATETIME,
-                source varchar(30),
-                attitudes_count INT,
-                comments_count INT,
-                reposts_count INT,
-                retweet_id varchar(20),
-                PRIMARY KEY (id)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
-        self.mysql_create_table(mysql_config, create_table)
         weibo_list = []
         retweet_list = []
         if len(self.write_mode) > 1:
@@ -1051,7 +1131,7 @@ class Weibo(object):
                     # 制会自动解除)，加入随机等待模拟人的操作，可降低被系统限制的风险。默
                     # 认是每爬取1到5页随机等待6到10秒，如果仍然被限，可适当增加sleep时间
                     if (page -
-                            page1) % random_pages == 0 and page < page_count:
+                        page1) % random_pages == 0 and page < page_count:
                         sleep(random.randint(6, 10))
                         page1 = page
                         random_pages = random.randint(1, 5)
@@ -1093,55 +1173,91 @@ class Weibo(object):
         self.weibo_id_list = []
 
     def start_get_user_detail(self):
-        p = Thread(target=self.get_user_detail(), args=('获取用户detail',))
+        p = Thread(target=self.get_user_detail, name="获取用户detail")
         p.start()  # 只是给操作系统发送了一个就绪信号，并不是执行。操作系统接收信号后安排cpu运行
 
     # 开始干活啦
     def get_user_detail(self):
-        """运行爬虫"""
-        try:
-            mysql_config = {
-                'host': 'localhost',
-                'port': 3306,
-                'user': 'root',
-                'password': 'qazplmcc',
-                'charset': 'utf8mb4'
-            }
-            uids = self.mysql_query(mysql_config, 'weibo_wait_insert_uid', 1)
-            a_uids = []
-            for a_uid in uids:
-                pre_uid = {'since_date': self.since_date, 'user_id': a_uid['uid']}
-                a_uids.append(pre_uid)
-            self.user_config_list = a_uids
-            for user_config in self.user_config_list:
-                self.initialize_info(user_config)
-                self.get_pages()
-                print(u'信息抓取完毕')
-                print('*' * 100)
-                if self.user_config_file_path:
-                    self.update_user_config_file(self.user_config_file_path)
-                # todo 移除 weibo_wait_insert_uid 表里面拉去过信息uid
+        print ('-------------------------开始获取用户detail---------------------------------')
+        """一直运行当前逻辑  循环从uid表里拿爬取的用户"""
+        while True:
+            """运行爬虫"""
+            try:
+                mysql_config = {
+                    'host': 'localhost',
+                    'port': 3306,
+                    'user': 'root',
+                    'password': 'qazplmcc',
+                    'charset': 'utf8mb4'
+                }
+
+                uids = self.mysql_query(mysql_config, 'weibo_wait_insert_uid', 20, 'ORDER BY c_time asc')
+                a_uids = []
+                for a_uid in uids:
+                    pre_uid = {'since_date': self.since_date, 'user_id': a_uid['uid']}
+                    a_uids.append(pre_uid)
+                # 先优先查看weibo_wait_insert_uid表里有没有新加入的待获取的uid
+                self.user_config_list = a_uids
+                if len(self.user_config_list) > 0:
+                    print('----------------------通过uid新获取的用户信息---------------')
+                    # 移除 weibo_wait_insert_uid 表里面拉去过信息uid
+                    self.pull_user_weibo_data(True)
+                else:
+                    # 如果没有就开始更新user用户的数据
+                    print('----------------------uid表暂无待新获取的用户信息---------------')
+                    print('----------------------开始按照user表更新已有用户新信息---------------')
+                    # 先获取user表里面的所有数据，然后分页开始爬取
+                    user_count = self.mysql_query_data_count('user')
+                    page_count = user_count[0]['count']
+                    page_start = 0
+                    while page_start < page_count:
+                        # 将user表里面存在的用户取出来 更新数据
+                        page_size = 20
+                        users = self.mysql_query_page('user', page_start * page_size, page_size)
+                        for a_user in users:
+                            pre_uid = {'since_date': self.since_date, 'user_id': a_user['id']}
+                            a_uids.append(pre_uid)
+                        self.user_config_list = a_uids
+                        # 进行分页查询
+                        self.pull_user_weibo_data(False)
+                        page_start += 1
                 # sleep
                 sleep(random.randint(6, 10))
-        except Exception as e:
-            print('Error: ', e)
-            traceback.print_exc()
+            except Exception as e:
+                print('Error: ', e)
+                traceback.print_exc()
+
+    def pull_user_weibo_data(self, del_old_data):
+        for user_config in self.user_config_list:
+            self.initialize_info(user_config)
+            self.get_pages()
+            print(u'信息抓取完毕')
+            print('*' * 100)
+            if self.user_config_file_path:
+                self.update_user_config_file(self.user_config_file_path)
+            if del_old_data:
+                """移除 weibo_wait_insert_uid 表里面拉去过信息uid"""
+                self.remove_data('weibo_wait_insert_uid', 'uid', user_config['user_id'])
+                print "移除uid：" + user_config['user_id']
 
     def start_query_user_pages(self):
-        p = Thread(target=self.get_query_user_pages(), args=('获取用户列表',))
+        p = Thread(target=self.get_query_user_pages, name= "获取用户列表")
         p.start()  # 只是给操作系统发送了一个就绪信号，并不是执行。操作系统接收信号后安排cpu运行
 
     #  获取指定搜索数据相关用户列表
     def get_query_user_pages(self):
+        print ('-------------------------开始获取用户列表---------------------------------')
         #  从第一页开始
         page_start = 1
         self.update_per_page_user_list(page_start)
         page_count = self.weibo_point_user['cardlistInfo']['v_p']
+        # 页数+1
+        page_start += 1
         #  如果获取到的分页数据大于默认第一页 则循环取值 否则就一页数据
-        # if page_start < page_count:
-        #     while page_start <= page_count:
-        #         self.update_per_page_user_list(page_start)
-        #         page_start += 1
+        if page_start < page_count:
+            while page_start <= page_count:
+                self.update_per_page_user_list(page_start)
+                page_start += 1
 
     # 更新分页拉取的每页用户数据，以便当前循环逻辑下可以获取
     def update_per_page_user_list(self, page_start):
@@ -1152,7 +1268,7 @@ class Weibo(object):
                 self.weibo_point_user_list = a_weibo_point_user['card_group']
         uids = []
         for point_user in self.weibo_point_user_list:
-            uids.append({'uid': point_user['user']['id']})
+            uids.append({'uid': point_user['user']['id'], 'c_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')})
         # 按页插入数据库 并且sleep下抓取操作
         self.insert_wait_pull_user_id(uids)
         # 随机休眠6-10s再继续干活
@@ -1179,28 +1295,22 @@ class Weibo(object):
             'password': '123456',
             'charset': 'utf8mb4'
         }
-        # 创建'weibo'数据库
-        create_database = """CREATE DATABASE IF NOT EXISTS weibo_wait_insert_uid DEFAULT
-                         CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"""
-        self.mysql_create_database(mysql_config, create_database)
-        # 创建'user'表
-        create_table = """
-                CREATE TABLE IF NOT EXISTS weibo_wait_insert_uid (
-                uid varchar(30) NOT NULL,
-                PRIMARY KEY (uid)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
-        self.mysql_create_table(mysql_config, create_table)
         self.mysql_insert(mysql_config, 'weibo_wait_insert_uid', wait_insert_uid)
         print(u'写入%s个待抓取用户进入MySQL数据库完毕 ' % wait_insert_uid)
+
+
+def test(para="hi"):
+    print ("ssssssss::::" + para)
+    sleep(random.randint(6, 10))
 
 
 def main():
     try:
         config_path = os.path.split(
-            os.path.realpath(__file__))[0] + os.sep + 'config.json'
+            os.path.realpath('__file__'))[0] + os.sep + 'config.json'
         if not os.path.isfile(config_path):
             sys.exit(u'当前路径：%s 不存在配置文件config.json' %
-                     (os.path.split(os.path.realpath(__file__))[0] + os.sep))
+                     (os.path.split(os.path.realpath('__file__'))[0] + os.sep))
         with open(config_path) as f:
             try:
                 config = json.loads(f.read())
@@ -1208,8 +1318,10 @@ def main():
                 sys.exit(u'config.json 格式不正确，请参考 '
                          u'https://github.com/dataabc/weibo-crawler#3程序设置')
         wb = Weibo(config)
+        wb.create_database()
         wb.start_get_user_detail()
-        # wb.start_query_user_pages()  # 爬取微博信息
+        wb.start_query_user_pages()  # 爬取微博信息
+
     except Exception as e:
         print('Error: ', e)
         traceback.print_exc()
