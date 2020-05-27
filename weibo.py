@@ -222,6 +222,7 @@ class Weibo(object):
         create_table = """
                 CREATE TABLE IF NOT EXISTS weibo_wait_insert_uid (
                 uid varchar(30) NOT NULL,
+                screen_name varchar(30),
                 c_time DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6),
                 PRIMARY KEY (uid)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
@@ -1022,6 +1023,7 @@ class Weibo(object):
         cursor = connection.cursor(DictCursor)
         try:
             cursor.execute("""delete from {table} where {key} = {value}""".format(table=table, key=key, value=value))
+            connection.commit();
         except Exception as e:
             connection.rollback()
             print('Error: ', e)
@@ -1238,7 +1240,7 @@ class Weibo(object):
             if del_old_data:
                 """移除 weibo_wait_insert_uid 表里面拉去过信息uid"""
                 self.remove_data('weibo_wait_insert_uid', 'uid', user_config['user_id'])
-                print "移除uid：" + user_config['user_id']
+                print "移除uid：" + str(user_config['user_id'])
 
     def start_query_user_pages(self):
         p = Thread(target=self.get_query_user_pages, name= "获取用户列表")
@@ -1268,7 +1270,7 @@ class Weibo(object):
                 self.weibo_point_user_list = a_weibo_point_user['card_group']
         uids = []
         for point_user in self.weibo_point_user_list:
-            uids.append({'uid': point_user['user']['id'], 'c_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')})
+            uids.append({'uid': point_user['user']['id'], 'screen_name': point_user['user']['screen_name'], 'c_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')})
         # 按页插入数据库 并且sleep下抓取操作
         self.insert_wait_pull_user_id(uids)
         # 随机休眠6-10s再继续干活
@@ -1321,6 +1323,10 @@ def main():
         wb.create_database()
         wb.start_get_user_detail()
         wb.start_query_user_pages()  # 爬取微博信息
+
+        # """移除 weibo_wait_insert_uid 表里面拉去过信息uid"""
+        # wb.remove_data('weibo_wait_insert_uid', 'uid', 1897320685)
+        # print "移除uid：" + str(1897320685)
 
     except Exception as e:
         print('Error: ', e)
